@@ -6,46 +6,45 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Authenticate with Google Cloud
+      - name: Debug Secret Length
+        run: echo "Secret length: ${#GCP_SA_KEY}"
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Set up gcloud CLI
-      - name: Configure gcloud
-        run: |
-          gcloud auth configure-docker us-central1-docker.pkg.dev
-          gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
 
-      # Build Docker Image
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ secrets.ARTIFACT_REPO }}:${{ github.sha }} .
-          docker tag ${{ secrets.ARTIFACT_REPO }}:${{ github.sha }} ${{ secrets.ARTIFACT_REPO }}:latest
+      - name: Configure Docker authentication
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
 
-      # Push Docker Image to Artifact Registry
-      - name: Push Docker image
+      - name: Build and Push Docker Image
         run: |
-          docker push ${{ secrets.ARTIFACT_REPO }}:${{ github.sha }}
-          docker push ${{ secrets.ARTIFACT_REPO }}:latest
+          IMAGE_NAME=us-central1-docker.pkg.dev/$GCP_PROJECT_ID/$GCP_ARTIFACT_REPO/my-app
+          docker build -t $IMAGE_NAME:$GITHUB_SHA .
+          docker push $IMAGE_NAME:$GITHUB_SHA
+          echo "IMAGE_NAME=$IMAGE_NAME:$GITHUB_SHA" >> $GITHUB_ENV
 
-      # Get GKE Credentials
-      - name: Configure kubectl
-        run: |
-          gcloud container clusters get-credentials ${{ secrets.GKE_CLUSTER_NAME }} --zone ${{ secrets.GKE_ZONE }} --project ${{ secrets.GCP_PROJECT_ID }}
+      - name: Get GKE Credentials
+        run: gcloud container clusters get-credentials $GKE_CLUSTER_NAME --region=$GKE_REGION --project=$GCP_PROJECT_ID
 
-      # Deploy to GKE
       - name: Deploy to GKE
         run: |
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-          kubectl apply -f k8s/ingress.yaml
-          kubectl set image deployment/my-app my-app=${{ secrets.ARTIFACT_REPO }}:${{ github.sha }}
+          kubectl apply -f k8s/
+          kubectl set image deployment/my-app my-app=$IMAGE_NAME --record
+          kubectl rollout status deployment/my-app
